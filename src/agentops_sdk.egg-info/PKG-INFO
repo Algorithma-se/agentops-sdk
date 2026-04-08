@@ -1,3 +1,16 @@
+Metadata-Version: 2.4
+Name: agentops-sdk
+Version: 0.2.0
+Summary: AgentOps Python SDK — tracing, prompts, guardrails, and content management
+Author: AgentOps
+License: Apache-2.0
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: langfuse>=2.0.0
+Requires-Dist: requests>=2.28.0
+Provides-Extra: jinja2
+Requires-Dist: jinja2>=3.1.0; extra == "jinja2"
+
 # AgentOps Python SDK
 
 Tracing, prompt management, guardrails, and content management for AgentOps.

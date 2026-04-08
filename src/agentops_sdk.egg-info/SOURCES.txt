@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+src/agentops/__init__.py
+src/agentops/_env.py
+src/agentops/client.py
+src/agentops/guardrails.py
+src/agentops/py.typed
+src/agentops/tables.py
+src/agentops_sdk.egg-info/PKG-INFO
+src/agentops_sdk.egg-info/SOURCES.txt
+src/agentops_sdk.egg-info/dependency_links.txt
+src/agentops_sdk.egg-info/requires.txt
+src/agentops_sdk.egg-info/top_level.txt
