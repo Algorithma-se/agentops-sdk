@@ -6,6 +6,21 @@ from typing import Any, Optional
 import requests
 
 from ._env import get_host, get_public_key, get_secret_key
+
+# Bridge AGENTOPS_* env vars to LANGFUSE_* so the @observe decorator's
+# internal singleton picks up the correct host and credentials.
+_BRIDGE_MAP = {
+    "LANGFUSE_HOST": get_host,
+    "LANGFUSE_BASE_URL": get_host,
+    "LANGFUSE_PUBLIC_KEY": get_public_key,
+    "LANGFUSE_SECRET_KEY": get_secret_key,
+}
+for _lf_key, _getter in _BRIDGE_MAP.items():
+    if not os.environ.get(_lf_key):
+        _val = _getter()
+        if _val:
+            os.environ[_lf_key] = _val
+
 from .tables import (
     TableData,
     ensure_cms_name,
