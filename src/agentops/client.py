@@ -258,9 +258,46 @@ class AgentOps:
         resp.raise_for_status()
         return resp.json()
 
+    def update_current_trace(
+        self,
+        *,
+        name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        tags: Optional[list[str]] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Update the active trace created by ``@observe()``.
+
+        Must be called from inside a function decorated with ``@observe()``.
+        """
+        from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
+
+        update_kwargs: dict[str, Any] = {**kwargs}
+        if name is not None:
+            update_kwargs["name"] = name
+        if session_id is not None:
+            update_kwargs["session_id"] = session_id
+        if user_id is not None:
+            update_kwargs["user_id"] = user_id
+        if metadata is not None:
+            update_kwargs["metadata"] = metadata
+        if tags is not None:
+            update_kwargs["tags"] = tags
+
+        langfuse_context.update_current_trace(**update_kwargs)
+
+    def flush(self) -> None:
+        """Flush all pending traces — both the API client and the ``@observe`` decorator buffer."""
+        from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
+
+        langfuse_context.flush()
+        self._client.flush()
+
     @property
     def client(self) -> Any:
-        """Access the underlying client directly."""
+        """Access the underlying Langfuse client directly."""
 
         return self._client
 

@@ -13,7 +13,26 @@ from .tables import (
     table_similarity_named,
     table_similarity_rows,
 )
-from langfuse.decorators import observe  # type: ignore[import-untyped]
+from langfuse.decorators import observe, langfuse_context  # type: ignore[import-untyped]
+
+
+def update_current_trace(
+    *,
+    name: str | None = None,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    **kwargs,
+):
+    """Convenience shortcut — update the active ``@observe()`` trace without a client instance."""
+    kw = {**kwargs}
+    if name is not None:
+        kw["name"] = name
+    if session_id is not None:
+        kw["session_id"] = session_id
+    if user_id is not None:
+        kw["user_id"] = user_id
+    langfuse_context.update_current_trace(**kw)
+
 
 __all__ = [
     "AgentOps",
@@ -32,6 +51,7 @@ __all__ = [
     "table_search",
     "table_similarity_named",
     "table_similarity_rows",
+    "update_current_trace",
 ]
 
 
