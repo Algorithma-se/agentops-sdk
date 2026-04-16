@@ -2,6 +2,7 @@ README.md
 pyproject.toml
 src/agentops/__init__.py
 src/agentops/_env.py
+src/agentops/async_client.py
 src/agentops/client.py
 src/agentops/guardrails.py
 src/agentops/py.typed

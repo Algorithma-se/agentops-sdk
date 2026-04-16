@@ -3,12 +3,20 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-import requests
+import httpx
 
 from ._env import get_host, get_public_key, get_secret_key
+from .tables import (
+    TableData,
+    ensure_cms_name,
+    ensure_tables_name,
+    parse_table_from_prompt_response,
+    row_as_name_map,
+    table_lookup,
+    table_search,
+    table_similarity_named,
+)
 
-# Bridge AGENTOPS_* env vars to LANGFUSE_* so the @observe decorator's
-# internal singleton picks up the correct host and credentials.
 _BRIDGE_MAP = {
     "LANGFUSE_HOST": get_host,
     "LANGFUSE_BASE_URL": get_host,
@@ -21,24 +29,19 @@ for _lf_key, _getter in _BRIDGE_MAP.items():
         if _val:
             os.environ[_lf_key] = _val
 
-from .tables import (
-    TableData,
-    ensure_cms_name,
-    ensure_tables_name,
-    parse_table_from_prompt_response,
-    row_as_name_map,
-    table_lookup,
-    table_search,
-    table_similarity_named,
-)
 
+class AsyncAgentOps:
+    """Async variant of :class:`AgentOps`.
 
-class AgentOps:
-    """
-    AgentOps-branded wrapper around the underlying Python client.
+    Uses ``httpx.AsyncClient`` for HTTP and the Langfuse ``async_api``
+    property for async tracing operations.  All public methods are
+    coroutines and must be awaited.
 
-    - Reads configuration from AGENTOPS_* env vars (fallback to AGENTOPS_*).
-    - Forwards all attributes/methods to the underlying client instance.
+    Usage::
+
+        async with AsyncAgentOps() as client:
+            content = await client.get_content("faq/intro")
+            result = await client.check_guardrails("user input", use_llm=True)
     """
 
     def __init__(
@@ -78,52 +81,58 @@ class AgentOps:
             secret_key=self._secret_key,
             **kwargs,
         )
+        self._http: Optional[httpx.AsyncClient] = None
 
-    def get_content(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        """Fetch managed CMS/content by name (policies, templates, non-chat assets).
+    async def _get_http(self) -> httpx.AsyncClient:
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(timeout=30.0)
+        return self._http
 
-        If ``name`` does not start with ``cms/``, the ``cms/`` prefix is added
-        automatically (e.g. ``"faq/intro"`` → ``"cms/faq/intro"``).
+    async def __aenter__(self) -> "AsyncAgentOps":
+        return self
 
-        Uses the same registry API as :meth:`get_prompt`.
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client and flush traces."""
+        if self._http and not self._http.is_closed:
+            await self._http.aclose()
+        self._client.flush()
+
+    async def get_content(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """Fetch managed CMS/content by name (async).
+
+        Delegates to the sync Langfuse ``get_prompt`` since it uses an
+        internal cache / background worker, not a blocking HTTP call in
+        the hot path.
         """
-
         full = ensure_cms_name(name)
         return self._client.get_prompt(full, *args, **kwargs)
 
-    def get_table(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        """Fetch a knowledge table by name.
-
-        If ``name`` does not start with ``tables/``, that prefix is added
-        (e.g. ``"sku-list"`` → ``"tables/sku-list"``).
-
-        Returns the same structure as :meth:`get_prompt` (raw prompt payload). Use
-        :meth:`get_table_data` to parse JSON into rows/columns.
-        """
-
+    async def get_table(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """Fetch a knowledge table by name (async)."""
         full = ensure_tables_name(name)
         return self._client.get_prompt(full, *args, **kwargs)
 
-    def get_table_data(self, name: str, **kwargs: Any) -> TableData:
+    async def get_table_data(self, name: str, **kwargs: Any) -> TableData:
         """Fetch a table and parse the prompt body as ``{columns, rows}`` JSON."""
-
-        raw = self.get_table(name, **kwargs)
+        raw = await self.get_table(name, **kwargs)
         return parse_table_from_prompt_response(raw)
 
-    def lookup_table(
+    async def lookup_table(
         self,
         name: str,
         column: str,
         value: Any,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
-        """Exact match on a column **name**; returns rows as ``{ColumnName: value, ...}``."""
-
-        data = self.get_table_data(name, **kwargs)
+        """Exact match on a column; returns rows as ``{ColumnName: value, ...}``."""
+        data = await self.get_table_data(name, **kwargs)
         rows = table_lookup(data, column, value)
         return [row_as_name_map(data, r) for r in rows]
 
-    def search_table(
+    async def search_table(
         self,
         name: str,
         query: str,
@@ -131,13 +140,12 @@ class AgentOps:
         limit: int = 20,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
-        """Case-insensitive substring search across all cells (each row at most once)."""
-
-        data = self.get_table_data(name, **kwargs)
+        """Case-insensitive substring search across all cells."""
+        data = await self.get_table_data(name, **kwargs)
         raw_rows = table_search(data, query, limit=limit)
         return [row_as_name_map(data, r) for r in raw_rows]
 
-    def search_table_similar(
+    async def search_table_similar(
         self,
         name: str,
         query: str,
@@ -146,14 +154,11 @@ class AgentOps:
         threshold: float = 0.4,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
-        """Fuzzy similarity search; returns up to ``limit`` rows with ``_score`` / ``_matched_column``."""
+        """Fuzzy similarity search; returns up to ``limit`` rows."""
+        data = await self.get_table_data(name, **kwargs)
+        return table_similarity_named(data, query, limit=limit, threshold=threshold)
 
-        data = self.get_table_data(name, **kwargs)
-        return table_similarity_named(
-            data, query, limit=limit, threshold=threshold
-        )
-
-    def get_file(
+    async def get_file(
         self,
         name: str,
         *,
@@ -161,52 +166,52 @@ class AgentOps:
         download: bool = False,
         download_dir: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Fetch a CMS file asset by slug.
+        """Fetch a CMS file asset by slug (async).
 
         Parameters
         ----------
         name:
             The file slug (e.g. ``"my-config"``).
         version:
-            Optional integer version. If omitted, the latest version is returned.
+            Optional integer version. If omitted, the latest is returned.
         download:
-            If ``True``, download the file content to ``download_dir`` (or cwd)
-            and add a ``local_path`` key to the returned dict.
+            If ``True``, download the file to ``download_dir`` (or cwd).
         download_dir:
-            Directory to save the file to (defaults to current working directory).
+            Directory to save the file to.
 
         Returns
         -------
         dict with ``name``, ``version``, ``fileName``, ``contentType``,
-        ``contentLength``, ``url`` (signed download URL), ``urlExpiry``, and
-        optionally ``local_path``.
+        ``contentLength``, ``url``, ``urlExpiry``, and optionally ``local_path``.
         """
+        http = await self._get_http()
         params: dict[str, Any] = {"name": name}
         if version is not None:
             params["version"] = version
 
-        resp = requests.get(
+        resp = await http.get(
             f"{self._host}/api/public/files",
             params=params,
             headers={"Authorization": f"Bearer {self._secret_key}"},
-            timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
 
         if download:
+            import aiofiles  # type: ignore[import-untyped]
+
             dest = download_dir or os.getcwd()
             local_path = os.path.join(dest, data["fileName"])
-            dl_resp = requests.get(data["url"], timeout=120, stream=True)
-            dl_resp.raise_for_status()
-            with open(local_path, "wb") as f:
-                for chunk in dl_resp.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            async with http.stream("GET", data["url"]) as dl_resp:
+                dl_resp.raise_for_status()
+                async with aiofiles.open(local_path, "wb") as f:
+                    async for chunk in dl_resp.aiter_bytes(chunk_size=8192):
+                        await f.write(chunk)
             data["local_path"] = local_path
 
         return data
 
-    def check_guardrails(
+    async def check_guardrails(
         self,
         text: str,
         *,
@@ -215,32 +220,27 @@ class AgentOps:
         config: Optional[dict[str, Any]] = None,
         use_llm: bool = False,
     ) -> dict[str, Any]:
-        """Run guardrail checks server-side.
+        """Run guardrail checks server-side (async).
 
         Parameters
         ----------
         text:
-            The text to check (user input or agent output).
+            The text to check.
         stage:
-            ``"pre_input"`` for user messages, ``"post_output"`` for agent responses.
+            ``"pre_input"`` or ``"post_output"``.
         agent_name:
             Load guardrail config from this agent's registry entry.
         config:
-            Explicit guardrail config dict. Overrides ``agent_name`` lookup.
+            Explicit guardrail config dict.
         use_llm:
-            When ``True``, run an additional LLM-based jailbreak/injection
-            classifier on the server. Adds latency (~1-3 s) but provides
-            much higher accuracy than regex alone. Requires LLM API keys
-            to be configured in the project settings.
+            Run LLM-based classifier (adds ~1-3 s latency).
 
         Returns
         -------
-        dict with ``action`` (``"allow"``, ``"block"``, ``"transform"``),
-        ``reasons``, ``tags``, ``metadata``, and optionally ``transformedText``.
-        When ``use_llm=True``, ``metadata.llmDetection`` contains the LLM
-        classification result with ``isJailbreak``, ``confidence``,
-        ``category``, and ``reasoning`` fields.
+        dict with ``action``, ``reasons``, ``tags``, ``metadata``,
+        and optionally ``transformedText``.
         """
+        http = await self._get_http()
         body: dict[str, Any] = {"stage": stage, "text": text}
         if config is not None:
             body["config"] = config
@@ -249,11 +249,12 @@ class AgentOps:
         if use_llm:
             body["useLlm"] = True
 
-        resp = requests.post(
+        timeout = 30.0 if use_llm else 10.0
+        resp = await http.post(
             f"{self._host}/api/public/guardrails",
             json=body,
             headers={"Authorization": f"Bearer {self._secret_key}"},
-            timeout=30 if use_llm else 10,
+            timeout=timeout,
         )
         resp.raise_for_status()
         return resp.json()
@@ -270,7 +271,7 @@ class AgentOps:
     ) -> None:
         """Update the active trace created by ``@observe()``.
 
-        Must be called from inside a function decorated with ``@observe()``.
+        This is synchronous because it only mutates thread-local state.
         """
         from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
 
@@ -288,8 +289,8 @@ class AgentOps:
 
         langfuse_context.update_current_trace(**update_kwargs)
 
-    def flush(self) -> None:
-        """Flush all pending traces — both the API client and the ``@observe`` decorator buffer."""
+    async def flush(self) -> None:
+        """Flush all pending traces."""
         from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
 
         langfuse_context.flush()
@@ -297,17 +298,13 @@ class AgentOps:
 
     @property
     def client(self) -> Any:
-        """Access the underlying tracing client directly."""
-
+        """Access the underlying Langfuse client directly."""
         return self._client
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
 
 
-def init(**kwargs: Any) -> AgentOps:
-    """Convenience constructor: init(...) -> AgentOps(...)."""
-
-    return AgentOps(**kwargs)
-
-
+async def async_init(**kwargs: Any) -> AsyncAgentOps:
+    """Convenience constructor: async_init(...) -> AsyncAgentOps(...)."""
+    return AsyncAgentOps(**kwargs)

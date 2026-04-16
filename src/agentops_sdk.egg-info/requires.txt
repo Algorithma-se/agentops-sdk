@@ -1,3 +1,7 @@
 langfuse<3.0,>=2.0.0
 requests>=2.28.0
+httpx>=0.25.0
 jinja2>=3.1.0
+
+[async]
+aiofiles>=23.0

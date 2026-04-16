@@ -1,4 +1,5 @@
 from .client import AgentOps, init
+from .async_client import AsyncAgentOps, async_init
 from .guardrails import Guardrails, GuardrailResult
 from .tables import (
     CMS_PREFIX,
@@ -36,11 +37,13 @@ def update_current_trace(
 
 __all__ = [
     "AgentOps",
+    "AsyncAgentOps",
     "CMS_PREFIX",
     "GuardrailResult",
     "Guardrails",
     "TABLES_PREFIX",
     "TableData",
+    "async_init",
     "ensure_cms_name",
     "ensure_tables_name",
     "init",
