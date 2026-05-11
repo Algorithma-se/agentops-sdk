@@ -102,3 +102,33 @@ file = client.get_file("config-doc", download=True)
 
 For a complete example with tracing and orchestrator logic, see:
 `examples/agent_bootstrap.py`
+
+## Running on Google Cloud Run (service-to-service auth)
+
+If your AgentOps server runs on Cloud Run with the default invoker-locked
+posture (i.e. **not** `allUsers`), public-API calls from another Cloud Run
+service will be rejected by Cloud Run's IAM gate with a 401 — the SDK's
+`Authorization: Basic pk:sk` header is opaque to Cloud Run, which requires
+a Google-signed OIDC bearer.
+
+Enable the SDK's built-in OIDC interceptor — no extra install, just an env var:
+
+```bash
+AGENTOPS_CLOUD_RUN_INVOKER_AUTH=true
+# Optional — defaults to AGENTOPS_HOST
+AGENTOPS_CLOUD_RUN_INVOKER_AUDIENCE=https://your-agentops.run.app
+```
+
+With the flag on, every outbound SDK request to your AgentOps host
+carries an additional `X-Serverless-Authorization: Bearer <oidc>`
+header. Cloud Run validates and strips it; the AgentOps container
+only sees the normal Basic auth. Your runtime service account needs
+`roles/run.invoker` on the AgentOps Cloud Run service — ask your
+platform team to grant it.
+
+The flag is **off by default**: SDK users outside GCP, on Cloud Run
+services configured with `allUsers`, or behind a load balancer that
+handles invoker auth themselves, don't need this and won't pay any
+runtime cost. Calls to other hosts (OpenAI, Stripe, etc.) are never
+touched — only requests matching the configured audience get the
+header.

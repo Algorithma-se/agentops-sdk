@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
 import httpx
 
+from . import _cloud_run_auth
 from ._env import get_host, get_public_key, get_secret_key
+
+_log = logging.getLogger("agentops")
 from .tables import (
     TableData,
     ensure_cms_name,
@@ -55,17 +59,32 @@ class AsyncAgentOps:
         self._host = host or get_host()
         self._public_key = public_key or get_public_key()
         self._secret_key = secret_key or get_secret_key()
+        self._enabled = True
+        self._client: Any = None
+        self._http: Optional[httpx.AsyncClient] = None
 
+        missing: list[str] = []
         if not self._host:
-            raise ValueError("Missing host. Set AGENTOPS_HOST (or pass host=...).")
+            missing.append("AGENTOPS_HOST")
         if not self._public_key:
-            raise ValueError(
-                "Missing public key. Set AGENTOPS_PUBLIC_KEY (or pass public_key=...)."
-            )
+            missing.append("AGENTOPS_PUBLIC_KEY")
         if not self._secret_key:
-            raise ValueError(
-                "Missing secret key. Set AGENTOPS_SECRET_KEY (or pass secret_key=...)."
+            missing.append("AGENTOPS_SECRET_KEY")
+
+        if missing:
+            _log.warning(
+                "AsyncAgentOps SDK disabled — missing env var(s): %s. "
+                "All calls will be no-ops.",
+                ", ".join(missing),
             )
+            self._enabled = False
+            return
+
+        # Install Cloud Run OIDC interceptor BEFORE constructing the
+        # Langfuse client so the very first ingestion call carries the
+        # X-Serverless-Authorization header. No-op unless the operator
+        # opts in via AGENTOPS_CLOUD_RUN_INVOKER_AUTH=true.
+        _cloud_run_auth.install(self._host)
 
         try:
             from langfuse import Langfuse  # type: ignore[import-untyped]
@@ -81,7 +100,6 @@ class AsyncAgentOps:
             secret_key=self._secret_key,
             **kwargs,
         )
-        self._http: Optional[httpx.AsyncClient] = None
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
@@ -94,29 +112,36 @@ class AsyncAgentOps:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
+    @property
+    def enabled(self) -> bool:
+        """Whether the SDK is configured and active."""
+        return self._enabled
+
     async def close(self) -> None:
         """Close the underlying HTTP client and flush traces."""
         if self._http and not self._http.is_closed:
             await self._http.aclose()
-        self._client.flush()
+        if self._client:
+            self._client.flush()
 
     async def get_content(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        """Fetch managed CMS/content by name (async).
-
-        Delegates to the sync Langfuse ``get_prompt`` since it uses an
-        internal cache / background worker, not a blocking HTTP call in
-        the hot path.
-        """
+        """Fetch managed CMS/content by name (async)."""
+        if not self._enabled:
+            return None
         full = ensure_cms_name(name)
         return self._client.get_prompt(full, *args, **kwargs)
 
     async def get_table(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Fetch a knowledge table by name (async)."""
+        if not self._enabled:
+            return None
         full = ensure_tables_name(name)
         return self._client.get_prompt(full, *args, **kwargs)
 
-    async def get_table_data(self, name: str, **kwargs: Any) -> TableData:
+    async def get_table_data(self, name: str, **kwargs: Any) -> Optional[TableData]:
         """Fetch a table and parse the prompt body as ``{columns, rows}`` JSON."""
+        if not self._enabled:
+            return None
         raw = await self.get_table(name, **kwargs)
         return parse_table_from_prompt_response(raw)
 
@@ -128,7 +153,11 @@ class AsyncAgentOps:
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Exact match on a column; returns rows as ``{ColumnName: value, ...}``."""
+        if not self._enabled:
+            return []
         data = await self.get_table_data(name, **kwargs)
+        if data is None:
+            return []
         rows = table_lookup(data, column, value)
         return [row_as_name_map(data, r) for r in rows]
 
@@ -141,7 +170,11 @@ class AsyncAgentOps:
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Case-insensitive substring search across all cells."""
+        if not self._enabled:
+            return []
         data = await self.get_table_data(name, **kwargs)
+        if data is None:
+            return []
         raw_rows = table_search(data, query, limit=limit)
         return [row_as_name_map(data, r) for r in raw_rows]
 
@@ -155,7 +188,11 @@ class AsyncAgentOps:
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Fuzzy similarity search; returns up to ``limit`` rows."""
+        if not self._enabled:
+            return []
         data = await self.get_table_data(name, **kwargs)
+        if data is None:
+            return []
         return table_similarity_named(data, query, limit=limit, threshold=threshold)
 
     async def get_file(
@@ -165,25 +202,13 @@ class AsyncAgentOps:
         version: Optional[int] = None,
         download: bool = False,
         download_dir: Optional[str] = None,
-    ) -> dict[str, Any]:
+    ) -> Optional[dict[str, Any]]:
         """Fetch a CMS file asset by slug (async).
 
-        Parameters
-        ----------
-        name:
-            The file slug (e.g. ``"my-config"``).
-        version:
-            Optional integer version. If omitted, the latest is returned.
-        download:
-            If ``True``, download the file to ``download_dir`` (or cwd).
-        download_dir:
-            Directory to save the file to.
-
-        Returns
-        -------
-        dict with ``name``, ``version``, ``fileName``, ``contentType``,
-        ``contentLength``, ``url``, ``urlExpiry``, and optionally ``local_path``.
+        Returns ``None`` when SDK is disabled.
         """
+        if not self._enabled:
+            return None
         http = await self._get_http()
         params: dict[str, Any] = {"name": name}
         if version is not None:
@@ -222,24 +247,10 @@ class AsyncAgentOps:
     ) -> dict[str, Any]:
         """Run guardrail checks server-side (async).
 
-        Parameters
-        ----------
-        text:
-            The text to check.
-        stage:
-            ``"pre_input"`` or ``"post_output"``.
-        agent_name:
-            Load guardrail config from this agent's registry entry.
-        config:
-            Explicit guardrail config dict.
-        use_llm:
-            Run LLM-based classifier (adds ~1-3 s latency).
-
-        Returns
-        -------
-        dict with ``action``, ``reasons``, ``tags``, ``metadata``,
-        and optionally ``transformedText``.
+        Returns ``{"action": "allow"}`` (fail-open) when SDK is disabled.
         """
+        if not self._enabled:
+            return {"action": "allow", "reasons": [], "tags": [], "metadata": {}}
         http = await self._get_http()
         body: dict[str, Any] = {"stage": stage, "text": text}
         if config is not None:
@@ -269,10 +280,10 @@ class AsyncAgentOps:
         tags: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> None:
-        """Update the active trace created by ``@observe()``.
+        """Update the active trace created by ``@observe()``."""
+        if not self._enabled:
+            return
 
-        This is synchronous because it only mutates thread-local state.
-        """
         from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
 
         update_kwargs: dict[str, Any] = {**kwargs}
@@ -291,6 +302,9 @@ class AsyncAgentOps:
 
     async def flush(self) -> None:
         """Flush all pending traces."""
+        if not self._enabled:
+            return
+
         from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
 
         langfuse_context.flush()
@@ -302,6 +316,8 @@ class AsyncAgentOps:
         return self._client
 
     def __getattr__(self, name: str) -> Any:
+        if not self._enabled or self._client is None:
+            return lambda *a, **kw: None
         return getattr(self._client, name)
 
 

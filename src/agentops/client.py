@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
 import requests
 
+from . import _cloud_run_auth
 from ._env import get_host, get_public_key, get_secret_key
+
+_log = logging.getLogger("agentops")
 
 # Bridge AGENTOPS_* env vars to LANGFUSE_* so the @observe decorator's
 # internal singleton picks up the correct host and credentials.
@@ -52,17 +56,31 @@ class AgentOps:
         self._host = host or get_host()
         self._public_key = public_key or get_public_key()
         self._secret_key = secret_key or get_secret_key()
+        self._enabled = True
+        self._client: Any = None
 
+        missing: list[str] = []
         if not self._host:
-            raise ValueError("Missing host. Set AGENTOPS_HOST (or pass host=...).")
+            missing.append("AGENTOPS_HOST")
         if not self._public_key:
-            raise ValueError(
-                "Missing public key. Set AGENTOPS_PUBLIC_KEY (or pass public_key=...)."
-            )
+            missing.append("AGENTOPS_PUBLIC_KEY")
         if not self._secret_key:
-            raise ValueError(
-                "Missing secret key. Set AGENTOPS_SECRET_KEY (or pass secret_key=...)."
+            missing.append("AGENTOPS_SECRET_KEY")
+
+        if missing:
+            _log.warning(
+                "AgentOps SDK disabled — missing env var(s): %s. "
+                "Tracing, content, and guardrail calls will be no-ops.",
+                ", ".join(missing),
             )
+            self._enabled = False
+            return
+
+        # Install Cloud Run OIDC interceptor BEFORE constructing the
+        # Langfuse client so the very first ingestion call carries the
+        # X-Serverless-Authorization header. No-op unless the operator
+        # opts in via AGENTOPS_CLOUD_RUN_INVOKER_AUTH=true.
+        _cloud_run_auth.install(self._host)
 
         try:
             from langfuse import Langfuse  # type: ignore[import-untyped]
@@ -79,6 +97,11 @@ class AgentOps:
             **kwargs,
         )
 
+    @property
+    def enabled(self) -> bool:
+        """Whether the SDK is configured and active."""
+        return self._enabled
+
     def get_content(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Fetch managed CMS/content by name (policies, templates, non-chat assets).
 
@@ -87,6 +110,9 @@ class AgentOps:
 
         Uses the same registry API as :meth:`get_prompt`.
         """
+        if not self._enabled:
+            _log.debug("get_content(%s) skipped — SDK disabled", name)
+            return None
 
         full = ensure_cms_name(name)
         return self._client.get_prompt(full, *args, **kwargs)
@@ -100,12 +126,17 @@ class AgentOps:
         Returns the same structure as :meth:`get_prompt` (raw prompt payload). Use
         :meth:`get_table_data` to parse JSON into rows/columns.
         """
+        if not self._enabled:
+            _log.debug("get_table(%s) skipped — SDK disabled", name)
+            return None
 
         full = ensure_tables_name(name)
         return self._client.get_prompt(full, *args, **kwargs)
 
-    def get_table_data(self, name: str, **kwargs: Any) -> TableData:
+    def get_table_data(self, name: str, **kwargs: Any) -> Optional[TableData]:
         """Fetch a table and parse the prompt body as ``{columns, rows}`` JSON."""
+        if not self._enabled:
+            return None
 
         raw = self.get_table(name, **kwargs)
         return parse_table_from_prompt_response(raw)
@@ -118,8 +149,12 @@ class AgentOps:
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Exact match on a column **name**; returns rows as ``{ColumnName: value, ...}``."""
+        if not self._enabled:
+            return []
 
         data = self.get_table_data(name, **kwargs)
+        if data is None:
+            return []
         rows = table_lookup(data, column, value)
         return [row_as_name_map(data, r) for r in rows]
 
@@ -132,8 +167,12 @@ class AgentOps:
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Case-insensitive substring search across all cells (each row at most once)."""
+        if not self._enabled:
+            return []
 
         data = self.get_table_data(name, **kwargs)
+        if data is None:
+            return []
         raw_rows = table_search(data, query, limit=limit)
         return [row_as_name_map(data, r) for r in raw_rows]
 
@@ -147,8 +186,12 @@ class AgentOps:
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Fuzzy similarity search; returns up to ``limit`` rows with ``_score`` / ``_matched_column``."""
+        if not self._enabled:
+            return []
 
         data = self.get_table_data(name, **kwargs)
+        if data is None:
+            return []
         return table_similarity_named(
             data, query, limit=limit, threshold=threshold
         )
@@ -160,7 +203,7 @@ class AgentOps:
         version: Optional[int] = None,
         download: bool = False,
         download_dir: Optional[str] = None,
-    ) -> dict[str, Any]:
+    ) -> Optional[dict[str, Any]]:
         """Fetch a CMS file asset by slug.
 
         Parameters
@@ -179,8 +222,12 @@ class AgentOps:
         -------
         dict with ``name``, ``version``, ``fileName``, ``contentType``,
         ``contentLength``, ``url`` (signed download URL), ``urlExpiry``, and
-        optionally ``local_path``.
+        optionally ``local_path``.  Returns ``None`` when SDK is disabled.
         """
+        if not self._enabled:
+            _log.debug("get_file(%s) skipped — SDK disabled", name)
+            return None
+
         params: dict[str, Any] = {"name": name}
         if version is not None:
             params["version"] = version
@@ -240,7 +287,12 @@ class AgentOps:
         When ``use_llm=True``, ``metadata.llmDetection`` contains the LLM
         classification result with ``isJailbreak``, ``confidence``,
         ``category``, and ``reasoning`` fields.
+        When SDK is disabled, returns ``{"action": "allow"}`` (fail-open).
         """
+        if not self._enabled:
+            _log.debug("check_guardrails skipped — SDK disabled")
+            return {"action": "allow", "reasons": [], "tags": [], "metadata": {}}
+
         body: dict[str, Any] = {"stage": stage, "text": text}
         if config is not None:
             body["config"] = config
@@ -272,6 +324,9 @@ class AgentOps:
 
         Must be called from inside a function decorated with ``@observe()``.
         """
+        if not self._enabled:
+            return
+
         from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
 
         update_kwargs: dict[str, Any] = {**kwargs}
@@ -290,6 +345,9 @@ class AgentOps:
 
     def flush(self) -> None:
         """Flush all pending traces — both the API client and the ``@observe`` decorator buffer."""
+        if not self._enabled:
+            return
+
         from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
 
         langfuse_context.flush()
@@ -302,6 +360,8 @@ class AgentOps:
         return self._client
 
     def __getattr__(self, name: str) -> Any:
+        if not self._enabled or self._client is None:
+            return lambda *a, **kw: None
         return getattr(self._client, name)
 
 

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: agentops-sdk
-Version: 0.3.0
+Version: 0.4.0
 Summary: AgentOps Python SDK — tracing, prompts, guardrails, and content management
 Author: AgentOps
 License: Apache-2.0
@@ -10,6 +10,7 @@ Requires-Dist: langfuse<3.0,>=2.0.0
 Requires-Dist: requests>=2.28.0
 Requires-Dist: httpx>=0.25.0
 Requires-Dist: jinja2>=3.1.0
+Requires-Dist: google-auth>=2.29.0
 Provides-Extra: async
 Requires-Dist: aiofiles>=23.0; extra == "async"
 
@@ -117,3 +118,33 @@ file = client.get_file("config-doc", download=True)
 
 For a complete example with tracing and orchestrator logic, see:
 `examples/agent_bootstrap.py`
+
+## Running on Google Cloud Run (service-to-service auth)
+
+If your AgentOps server runs on Cloud Run with the default invoker-locked
+posture (i.e. **not** `allUsers`), public-API calls from another Cloud Run
+service will be rejected by Cloud Run's IAM gate with a 401 — the SDK's
+`Authorization: Basic pk:sk` header is opaque to Cloud Run, which requires
+a Google-signed OIDC bearer.
+
+Enable the SDK's built-in OIDC interceptor — no extra install, just an env var:
+
+```bash
+AGENTOPS_CLOUD_RUN_INVOKER_AUTH=true
+# Optional — defaults to AGENTOPS_HOST
+AGENTOPS_CLOUD_RUN_INVOKER_AUDIENCE=https://your-agentops.run.app
+```
+
+With the flag on, every outbound SDK request to your AgentOps host
+carries an additional `X-Serverless-Authorization: Bearer <oidc>`
+header. Cloud Run validates and strips it; the AgentOps container
+only sees the normal Basic auth. Your runtime service account needs
+`roles/run.invoker` on the AgentOps Cloud Run service — ask your
+platform team to grant it.
+
+The flag is **off by default**: SDK users outside GCP, on Cloud Run
+services configured with `allUsers`, or behind a load balancer that
+handles invoker auth themselves, don't need this and won't pay any
+runtime cost. Calls to other hosts (OpenAI, Stripe, etc.) are never
+touched — only requests matching the configured audience get the
+header.
