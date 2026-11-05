@@ -1,0 +1,62 @@
+{
+  "recordedWith": {
+    "agentopsSdk": "0.4.0",
+    "langfuse": "2.60.10",
+    "python": "3.12.14"
+  },
+  "requests": [
+    {
+      "authScheme": "Basic",
+      "body": {
+        "batch": [
+          {
+            "body": {
+              "id": "8d3c05b2-fe42-489f-8099-f47a5a554698",
+              "name": "sdk-log-carrier",
+              "release": "contract-fixture",
+              "timestamp": "2026-09-23T05:42:00.833794Z"
+            },
+            "id": "8cb7d4cf-8764-478c-a49a-64f99723c808",
+            "timestamp": "2026-09-23T05:42:00.834116Z",
+            "type": "trace-create"
+          },
+          {
+            "body": {
+              "log": {
+                "all_files": [
+                  "<frozen importlib._bootstrap_external>:757: size=11.6 MiB, count=103643, average=117 B",
+                  "<frozen importlib._bootstrap>:488: size=1527 KiB, count=12376, average=126 B",
+                  "<frozen abc>:106: size=733 KiB, count=2482, average=302 B"
+                ],
+                "langfuse_files": [
+                  "__init__.py:3: size=6575 B, count=2, average=3288 B",
+                  "__init__.py:174: size=6512 B, count=1, average=6512 B",
+                  "client.py:102: size=5576 B, count=12, average=465 B"
+                ],
+                "langfuse_queue_length": 0,
+                "total_usage": "25.96 MB"
+              }
+            },
+            "id": "94e38f00-d0c6-42b1-94cd-30fac9127f11",
+            "timestamp": "2026-09-23T05:42:01.209784Z",
+            "type": "sdk-log"
+          }
+        ],
+        "metadata": {
+          "batch_size": 2,
+          "public_key": "pk-lf-recorder",
+          "sdk_integration": "default",
+          "sdk_name": "python",
+          "sdk_version": "2.60.10"
+        }
+      },
+      "headers": {
+        "content-type": "application/json"
+      },
+      "method": "POST",
+      "path": "/api/public/ingestion"
+    }
+  ],
+  "scenario": "sdk_log",
+  "unhandledRequests": []
+}

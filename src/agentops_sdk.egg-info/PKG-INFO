@@ -1,18 +1,26 @@
 Metadata-Version: 2.4
 Name: agentops-sdk
-Version: 0.4.0
+Version: 0.5.0
 Summary: AgentOps Python SDK — tracing, prompts, guardrails, and content management
 Author: AgentOps
 License: Apache-2.0
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
-Requires-Dist: langfuse<3.0,>=2.0.0
+Requires-Dist: langfuse<3.0,>=2.54.0
 Requires-Dist: requests>=2.28.0
 Requires-Dist: httpx>=0.25.0
 Requires-Dist: jinja2>=3.1.0
 Requires-Dist: google-auth>=2.29.0
 Provides-Extra: async
 Requires-Dist: aiofiles>=23.0; extra == "async"
+Provides-Extra: pii
+Requires-Dist: ff3>=1.0.3; extra == "pii"
+Provides-Extra: governance
+Requires-Dist: agent-governance-toolkit-core==4.1.0; extra == "governance"
+Requires-Dist: opentelemetry-sdk<2,>=1.44; extra == "governance"
+Requires-Dist: opentelemetry-exporter-otlp-proto-http<2,>=1.44; extra == "governance"
+Provides-Extra: dev
+Requires-Dist: pytest>=7; extra == "dev"
 
 # AgentOps Python SDK
 
@@ -29,6 +37,13 @@ Or in `requirements.txt`:
 ```
 agentops_sdk @ https://github.com/Algorithma-se/agentops-sdk/releases/download/v0.2.0/agentops_sdk-0.2.0-py3-none-any.whl
 ```
+
+## Compatibility
+
+`agentops-sdk` 0.x wraps the Langfuse v2 client and sends traces through
+`POST /api/public/ingestion`. [COMPATIBILITY.md](COMPATIBILITY.md) has the
+server compatibility promise, the version matrix, known issues and the plan
+for an OpenTelemetry-based 1.0.
 
 ## Configure
 
@@ -100,6 +115,145 @@ if result["action"] == "block":
     return "Sorry, I can't help with that."
 ```
 
+To run the same checks locally, build a `Guardrails` from the agent's
+Agent Registry entry. It looks the agent up via `/api/public/agents` and
+warns (`GuardrailConfigWarning`) instead of silently returning a no-op when
+the config can't be loaded; `strict=True` raises instead. Current servers
+don't expose `guardrailConfig` on the public agent resource yet, so until
+they do this falls back with a warning and `check_guardrails` above is the
+way to enforce registry config.
+
+```python
+from agentops import Guardrails
+
+guard = Guardrails.from_agent(client, "support-agent", strict=True)
+result = guard.check_input(user_input)
+```
+
+### Tool-call policy (AGT)
+
+`pip install "agentops-sdk[governance]"` adds Microsoft's Agent Governance
+Toolkit (pinned 4.1.0) plus the OpenTelemetry exporter. The helper is
+`agentops.governance`: it evaluates an AGT policy once per tool call, emits
+AGT's `agt.policy.evaluate` span with the tool name/args added, and ships it
+to AOS Control (AGT's own `enable_otel()` attaches no exporter and its
+`govern()` emits no spans), where denials show up as `GUARDRAIL`
+observations and Guardrail Alerts.
+
+```python
+from agentops.governance import enable_agt_export, governed, pre_tool_call, PolicyDenied
+
+enable_agt_export(service_name="support-agent")  # AGENTOPS_HOST / keys from env
+
+@governed(policy="policy.yaml", agent_id="did:mesh:support-agent")
+def execute_tool(action: str, tool: str, path: str) -> str: ...
+
+# or, when you can't wrap the function (dispatch hooks, MCP servers):
+decision = pre_tool_call("policy.yaml", "did:mesh:support-agent", "delete_file", args)
+```
+
+Denied calls raise `PolicyDenied` (`.rule`, `.policy_name`, `.agent_id`,
+`.tool_name`); pass `raise_on_deny=False` to get a `Decision` back instead.
+
+**Policy from the registry.** Publish the AGT manifest on the agent's registry
+entry (or keep using `preTool.toolAllowlist` — the server translates it) and
+fetch it instead of shipping a YAML file with the agent:
+
+```python
+policy = client.get_policy("support-agent", label="production")  # cached 60 s, stale-on-error
+# policy.version, .labels, .manifest, .rego, .source ("registry" | "translated_allowlist")
+decision = pre_tool_call(policy.to_agt_policy_spec(), "support-agent", "delete_file", args,
+                         policy_version=policy.version)
+```
+
+`get_policy` raises `agentops.PolicyNotFound` on a 404; `fallback="<yaml>"` covers
+network failures. `Guardrails.from_agent()` loads it automatically, so one object
+covers text guardrails and tool policy (the text-guardrail lookup warns as
+described above when the registry doesn't expose `guardrailConfig`):
+
+```python
+guard = Guardrails.from_agent(client, "support-agent")   # guardrailConfig + policy
+
+result = guard.pre_tool_call("delete_file", {"path": "/data/x.csv"})
+if result.action == "block":                              # deny / require_approval
+    return f"blocked: {result.reasons[0]}"                # "policy_denied:<rule>"
+
+@guard.govern                                             # same as governed(policy=..., agent_id="support-agent")
+def execute_tool(action: str, tool: str, path: str) -> str: ...
+```
+
+Both raise `RuntimeError` when no policy is loaded or the extra is missing.
+
+**Governance events.** Every decision is also posted (batched, best-effort,
+background thread) to `POST /api/public/governance-events` so AOS Control
+shows it on the trace's Governance tab even if the agent dies mid-run.
+`enable_agt_export()` sets the default shipper up from the same credentials
+(`ship_events=False` to opt out); to export AGT's own tamper-evident audit
+log — hash chain included — use `agentops.ship_audit_log(audit_log, shipper)`
+or `AuditLog(sink=agentops.AgentOpsAuditSink(shipper))`:
+
+```python
+from agentops import GovernanceEventShipper, set_default_shipper, ship_audit_log
+
+shipper = GovernanceEventShipper(client, batch_size=100, flush_interval_s=2.0)
+set_default_shipper(shipper)                 # governed()/pre_tool_call()/Guardrails use it
+...
+ship_audit_log(governed_fn.audit_log, shipper)   # AGT AuditLog entries (previous_hash/hash kept)
+shipper.flush()                              # also runs at exit
+```
+
+Setup, endpoint details and troubleshooting: `docs/guardrails.md`, section
+"Runtime tool-call policy with the Agent Governance Toolkit". Runnable
+example: `examples/agt_governed_agent.py` with `examples/agt_policy.yaml`.
+
+## Talk Correlation (trace fold + cost line)
+
+When AgentOps Talk calls your agent, it sends an `x-aos-talk-turn-id`
+header on every request. Stamp that value onto your trace's metadata
+and Talk will show a trace fold ("reading · 3 steps") and a cost/latency
+line under the reply — skip it and Talk still works, it just shows
+neither for that reply rather than fabricating one.
+
+With a manually-created trace (the pattern above and in
+`examples/agent_bootstrap.py`):
+
+```python
+from agentops.talk import talk_turn_metadata
+
+trace = agentops.trace(
+    name="my-agent",
+    session_id=conversation_id,
+    metadata=talk_turn_metadata(request.headers),  # {} when not called from Talk
+)
+```
+
+Inside an `@observe()`-decorated request handler instead:
+
+```python
+from agentops.talk import echo_talk_turn_id
+
+@observe()
+def handle_request(request):
+    echo_talk_turn_id(request.headers)
+    ...
+```
+
+Both accept any headers mapping (Flask, FastAPI, a plain `dict`, matched
+case-insensitively) or an already-extracted turn id string.
+
+## Local PII Obfuscation
+
+Requires `pip install agentops-sdk[pii]` and an FF3 key (`AGENTOPS_LOCAL_FPE_KEY` env var, 256-bit hex, or pass `key=`). Runs entirely locally — no network call, nothing leaves your machine.
+
+```python
+from agentops.guardrails import Guardrails
+
+guard = Guardrails()
+obfuscated = guard.obfuscate(user_input, context_id=trace_id)
+response = call_your_own_llm(obfuscated)
+restored = guard.deobfuscate(response, context_id=trace_id)
+```
+
 ## Content Management
 
 ```python
@@ -113,6 +267,143 @@ rows = client.search_table("product-catalog", "widget", limit=10)
 # File assets
 file = client.get_file("config-doc", download=True)
 ```
+
+## Evolve Agent (`agentops evolve`)
+
+The developer side of AOS Control's Evolve Agent (preview feature; spec in
+AOS Control's `docs/evolve-agent.md`). Reviewers write feedback on agent
+answers on the "Agent feedback" page. A coding agent with the
+`evolve-agent` skill finds that feedback, changes the agent repo, replays
+the reviewed turns locally, assesses each feedback revision and, when the
+developer asks, publishes the replay back. Reviewers then see the
+original and the replayed answer side by side.
+
+### Install
+
+`agentops evolve` needs agentops-sdk 0.5.0 or later. The `replay` command
+imports the agent's runtime, so install the SDK in the agent repo's own
+environment (next to foundry-agents-core, which provides `app.evolve_agent`) and
+run it from the repo root with `uv run agentops evolve …`. `find` and
+`export` read `config/agents.yaml` and need PyYAML, which agent repos have.
+
+### Credentials and `.env.evolve`
+
+Every command that talks to AOS Control (`find`, `export`, `prompt pull`,
+`ask`, `publish`, `revert`) reads `AGENTOPS_HOST`, `AGENTOPS_PUBLIC_KEY`
+and `AGENTOPS_SECRET_KEY` from the environment, or with `--env-file PATH`
+from that dotenv file: only those three keys, the file wins, nothing is
+printed. `.env` is never read. Reading turns needs a key that is not
+ingest-only.
+
+`replay` is different: `--env-file` is required, it loads the **whole**
+file before the agent's modules are imported, and pydantic settings read
+that file instead of `./.env`. Keep one file for both, `.env.evolve`
+(git-ignored; the skill ships `env.evolve.template`):
+
+- `LANGFUSE_SAMPLE_RATE=0`, or `replay` refuses to run;
+- the three `AGENTOPS_*` keys, or no trace events are captured and every run
+  fails;
+- only **read-only or sandbox** credentials: hooks (including
+  `after_session`) and tools run as in production;
+- the PII masking settings as in production. Masking stays on: the model
+  gets the same LLM-masked text as the original turn, and every captured
+  event is masked as normal ingestion masks it.
+
+### Commands
+
+```bash
+# Turns with feedback that still needs work on this branch, as JSON
+agentops evolve find --env-file .env.evolve --feedback unresolved
+
+# Freeze them (history, user message, original reply and prompt, feedback)
+agentops evolve export --env-file .env.evolve --feedback unresolved \
+    --output local/evolve/delivery-target.json
+
+# Copy an AOS prompt to a local candidate file (aos_instructions agents)
+agentops evolve prompt pull support-system --env-file .env.evolve
+
+# Replay with this checkout's agent; writes a new replay.json and .html
+uv run agentops evolve replay local/evolve/delivery-target.json \
+    --env-file .env.evolve --name delivery-fix \
+    --prompt support-system=local/evolve/prompts/support-system.txt
+
+# Record the assessment of one feedback revision
+agentops evolve assess local/evolve/2026-10-26_01-delivery-fix/replay.json \
+    --run-id <run id> --feedback-id <id> --status fixed \
+    --explanation "…" --evidence "…" --changes "…" --author "Jonas"
+
+# Read the replay as text, or write the HTML comparison again
+agentops evolve show local/evolve/2026-10-26_01-delivery-fix/replay.json --full
+agentops evolve render local/evolve/2026-10-26_01-delivery-fix/replay.json
+
+# Ask the reviewers a question; --withdraw <question id> takes it back
+agentops evolve ask --env-file .env.evolve --feedback-id <id> \
+    --question "Which opening hours are right?" --author "$(git config user.name)"
+
+# Preview; only --apply publishes
+agentops evolve publish local/evolve/2026-10-26_01-delivery-fix/replay.json --env-file .env.evolve
+
+# Preview; only --apply reverts (a replay.json or a replay id)
+agentops evolve revert <replay id> --env-file .env.evolve
+
+# Link the skill into .claude/skills and .agents/skills (--copy to copy)
+agentops evolve install-skill
+```
+
+- **Selecting turns** (`find`, `export`): `--trace-name` (repeatable; also
+  matches `name/<variant>`; default: the agents in `config/agents.yaml`),
+  `--session`, `--trace-id`, `--since` / `--until` (`7d`, `24h`, `30m` or ISO
+  8601; the server default is the last 7 days), `--text`, `--tool`,
+  `--tool-error`, `--vote up|down`, `--feedback`, `--feedback-id`,
+  `--source`, and `--like <trace id>` (most similar first; same tools in the
+  same order unless `--any-tools`), and `--exclude <json>` (repeatable:
+  skip the sessions of a frozen file or saved `find` output, e.g. the target
+  when picking a regression set). `find` also takes `--limit` and `--page`,
+  and prints the turn and feedback count to stderr.
+- **`--feedback`** takes `unresolved`, `any`, `none` or states (`open`,
+  `partial`, `fixed`, `closed`, `needs_input`, `dismissed`, …).
+  `unresolved` keeps `open` and `partial` items, and `fixed` / `closed` items
+  whose resolving assessment comes from a commit `HEAD` does not contain.
+- **`export`** needs `--feedback`, `--feedback-id` or `--trace-id`, freezes
+  every feedback item of the picked turns, and never overwrites a file.
+- **`replay`** never changes the frozen file. It writes
+  `local/evolve/<date>_<NN>-<name>/replay.json` (or `--output`) with each
+  run's trace events in `run.events`; nothing is sent. `--repeat N` (1–10)
+  adds untraced runs to `run.repeats`; `--concurrency` defaults to 4.
+  `--local-mcp NAME=COMMAND` (repeatable) starts an MCP server from the
+  checkout for the run (`{port}`: a free port) and points `MCP_URL_<NAME>`
+  at it; every process of the replay reads only `--env-file`. It
+  stops before running anything if an entry's agent is not in the local
+  agents config. Exit code 1 when a run failed.
+- **`assess`** picks the entry by `--run-id`, `--trace-id` or `--session`,
+  replaces an earlier assessment of the same feedback, and starts `changes`
+  with the replay commit. Statuses: `fixed`, `verified`, `partial`,
+  `unresolved`, `regressed`, `blocked`, `superseded`, `wontfix`.
+- **`publish`** without `--apply` sends nothing. It checks the file and the
+  working tree are clean, the replay commit is `HEAD`, every run completed
+  with trace events, every assessment names a frozen revision and the
+  commit, the file belongs to the key's project, and each candidate prompt
+  file and its label's base version are unchanged. `--apply` creates one
+  prompt version per candidate, without labels (commit message `Agent
+Evolve: <replay name>`), then publishes with `published_by` from `git
+config user.name`. A person moves `production` in AOS Control.
+- **Publish only on request.** Run `publish --apply` or `revert --apply`
+  only when the developer asks. Publishing the same file again is safe (it
+  retries the trace ingest); a changed file with the same `replay_id` is
+  refused: replay again.
+
+### The replay seam in foundry-agents-core
+
+`replay` imports `app.evolve_agent` from the agent repo's core. `runtime(prompts)`
+loads the agents, starts MCP and serves the candidate prompt texts; its
+`run_turn(agent_name, user_message, history, request_meta, user_context)` runs one turn
+with a `NullConversationStore`, so nothing is read from or written to
+Postgres. The SDK opens each run's root trace with the id `run_id` and
+captures Langfuse v2's queue (`TaskManager.add_task`), so the events land in
+the file instead of being sent. Each turn gets the `request_meta` and
+`user_context` core recorded on the original trace (frozen in `source`). A
+trace named `support/v2` replays agent `support` with `"agent_variant": "v2"`
+added to `request_meta`.
 
 ## Bootstrap Template
 
@@ -148,3 +439,30 @@ handles invoker auth themselves, don't need this and won't pay any
 runtime cost. Calls to other hosts (OpenAI, Stripe, etc.) are never
 touched — only requests matching the configured audience get the
 header.
+
+## Private endpoint connectivity in closed VNets
+
+For deployments in closed VNets where the SDK can't reach a public
+internet URL, no code changes are required — this is purely a
+deployment configuration concern:
+
+- **`AGENTOPS_HOST`** already accepts any URL — point it at your
+  private endpoint (e.g. `http://agentops.internal:3000` or
+  `https://agentops.vnet.company.com`). The SDK uses this host for
+  every API call, including `get_prompt`, `get_file`, and trace
+  ingestion.
+- **File downloads (`get_file(..., download=True)`)** return a signed
+  URL from whatever object store backs the deployment. That URL must
+  also be reachable from inside the VNet:
+  - **MinIO (self-hosted)**: the signed URL is built from
+    `AGENTOPS_S3_EVENT_UPLOAD_ENDPOINT`, so point it at MinIO's
+    VNet-accessible hostname rather than a public one.
+  - **Azure Blob with private endpoints**: signed URLs are generated
+    against the blob's private endpoint domain automatically once the
+    private endpoint is configured — no extra setting needed.
+  - **AWS S3 with VPC endpoints**: signed URLs resolve through the VPC
+    endpoint gateway transparently.
+- **Docker Compose**: `docker-compose.yml` already binds every service
+  to `0.0.0.0`, so they're reachable on the host network as-is. In a
+  VNet, expose the `web` container's port under a private DNS name so
+  clients inside the network can reach it via `AGENTOPS_HOST`.

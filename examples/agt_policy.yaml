@@ -1,0 +1,24 @@
+# Minimal Agent Governance Toolkit (AGT) policy for agt_governed_agent.py.
+#
+# Schema: agentmesh.governance.policy.Policy, verified against
+# agent-governance-toolkit==4.1.0 (apiVersion governance.toolkit/v1).
+#
+# Context shape that agentmesh.governance.govern() builds from call kwargs:
+#   governed(action="delete", tool="delete_customer_record", customer_id="42")
+#   -> {"action": {"type": "delete"},
+#       "tool": {"value": "delete_customer_record"},
+#       "customer_id": {"value": "42"}}
+# so tool-name rules are written as `tool.value == '...'`.
+apiVersion: governance.toolkit/v1
+name: support-agent-policy
+version: "1.0"
+description: Read-only support agent. Destructive tool calls are denied.
+agents: ["*"]
+default_action: allow
+rules:
+  - name: block-destructive
+    description: Deny destructive action types and the delete_customer_record tool.
+    stage: pre_tool
+    condition: "action.type in ['drop', 'delete', 'truncate'] or tool.value == 'delete_customer_record'"
+    action: deny
+    priority: 100

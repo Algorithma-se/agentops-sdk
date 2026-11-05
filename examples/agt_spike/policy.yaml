@@ -1,0 +1,22 @@
+# Minimal Agent Governance Toolkit (AGT) policy used by the AOS Control spike.
+#
+# Schema: agentmesh.governance.policy.Policy (AGT 4.1.0), apiVersion governance.toolkit/v1.
+# Everything is allowed by default; a single pre_tool rule denies destructive
+# actions either by action type or by tool name.
+#
+# Context shape produced by agentmesh.governance.govern() from call kwargs:
+#   governed(action="delete", tool="delete_file", path="...")
+#   -> {"action": {"type": "delete"}, "tool": {"value": "delete_file"}, "path": {"value": "..."}}
+apiVersion: governance.toolkit/v1
+name: aos-control-spike
+version: "1.0"
+description: Deny destructive tool calls, allow everything else.
+agents: ["*"]
+default_action: allow
+rules:
+  - name: deny-destructive-tool-calls
+    description: Destructive actions and delete_file are not permitted for this agent.
+    stage: pre_tool
+    condition: "action.type in ['drop', 'delete', 'truncate'] or tool.value == 'delete_file'"
+    action: deny
+    priority: 100

@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import requests
 
-from . import _cloud_run_auth
-from ._env import get_host, get_public_key, get_secret_key
+from . import _cloud_run_auth, _http
+from ._env import basic_auth_header, get_host, get_public_key, get_secret_key
+from .policies import (
+    DEFAULT_CACHE_TTL_S,
+    DEFAULT_LABEL,
+    AgentPolicy,
+    PolicyCache,
+    PolicyNotFound,
+    parse_policy_response,
+    policy_url,
+    resolve_after_fetch_error,
+)
 
 _log = logging.getLogger("agentops")
 
@@ -58,6 +68,7 @@ class AgentOps:
         self._secret_key = secret_key or get_secret_key()
         self._enabled = True
         self._client: Any = None
+        self._policy_cache = PolicyCache()
 
         missing: list[str] = []
         if not self._host:
@@ -235,7 +246,7 @@ class AgentOps:
         resp = requests.get(
             f"{self._host}/api/public/files",
             params=params,
-            headers={"Authorization": f"Bearer {self._secret_key}"},
+            headers=basic_auth_header(self._public_key, self._secret_key),
             timeout=30,
         )
         resp.raise_for_status()
@@ -252,6 +263,70 @@ class AgentOps:
             data["local_path"] = local_path
 
         return data
+
+    def get_policy(
+        self,
+        agent_name: str,
+        label: str = DEFAULT_LABEL,
+        *,
+        cache_ttl_seconds: int = DEFAULT_CACHE_TTL_S,
+        fallback: Union[str, AgentPolicy, None] = None,
+        fetch_timeout_seconds: float = 10.0,
+    ) -> Optional[AgentPolicy]:
+        """Fetch the agent's tool-call policy (AGT manifest) from the registry.
+
+        ``GET /api/public/policies/{agent_name}?label={label}``. Results are
+        cached for ``cache_ttl_seconds`` (``0`` disables the cache); when a
+        refresh fails the previously cached version is returned with a
+        warning, and when nothing is cached ``fallback`` (an AGT YAML string
+        or :class:`AgentPolicy`) is used — the same semantics as
+        ``get_prompt``. A ``404`` raises :class:`PolicyNotFound` (never masked
+        by the cache or ``fallback``); other failures raise
+        :class:`PolicyFetchError` / the transport error.
+
+        Returns ``None`` when the SDK is disabled (unless ``fallback`` is given).
+        Pass ``policy.to_agt_policy_spec()`` to ``agentops.governance``.
+        """
+        if not self._enabled:
+            _log.debug("get_policy(%s) skipped — SDK disabled", agent_name)
+            return AgentPolicy.from_fallback(agent_name, fallback) if fallback is not None else None
+
+        cached, fresh = self._policy_cache.get(agent_name, label, cache_ttl_seconds)
+        if cached is not None and fresh:
+            return cached
+        try:
+            policy = self._fetch_policy(agent_name, label, timeout=fetch_timeout_seconds)
+        except Exception as e:
+            if isinstance(e, PolicyNotFound):
+                self._policy_cache.drop(agent_name, label)
+            return resolve_after_fetch_error(
+                e, agent_name=agent_name, label=label, stale=cached, fallback=fallback
+            )
+        self._policy_cache.put(agent_name, label, policy)
+        return policy
+
+    def _fetch_policy(self, agent_name: str, label: str, *, timeout: float) -> AgentPolicy:
+        resp = _http.get_session().get(
+            policy_url(self._host, agent_name),
+            params={"label": label},
+            headers={"Authorization": _http.basic_auth_header(self._public_key, self._secret_key)},
+            timeout=timeout,
+        )
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        return parse_policy_response(
+            resp.status_code,
+            body,
+            agent_name=agent_name,
+            label=label,
+            text=getattr(resp, "text", "") or "",
+        )
+
+    def clear_policy_cache(self) -> None:
+        """Forget cached policies so the next ``get_policy`` refetches."""
+        self._policy_cache.clear()
 
     def check_guardrails(
         self,
@@ -304,11 +379,79 @@ class AgentOps:
         resp = requests.post(
             f"{self._host}/api/public/guardrails",
             json=body,
-            headers={"Authorization": f"Bearer {self._secret_key}"},
+            headers=basic_auth_header(self._public_key, self._secret_key),
             timeout=30 if use_llm else 10,
         )
         resp.raise_for_status()
         return resp.json()
+
+    def _check_tool_stage(
+        self,
+        stage: str,
+        tool_name: str,
+        key: str,
+        payload: Any,
+        agent_name: Optional[str],
+        config: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not self._enabled:
+            return {"action": "allow", "reasons": [], "tags": [], "metadata": {}}
+        body: dict[str, Any] = {"stage": stage, "toolName": tool_name, key: payload}
+        if config is not None:
+            body["config"] = config
+        elif agent_name is not None:
+            body["agentName"] = agent_name
+        resp = requests.post(
+            f"{self._host}/api/public/guardrails",
+            json=body,
+            headers=basic_auth_header(self._public_key, self._secret_key),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def check_tool_call(
+        self,
+        tool_name: str,
+        args: Any,
+        *,
+        agent_name: Optional[str] = None,
+        config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Check a tool call's arguments server-side, before running the tool.
+
+        Looks for URLs that reach an internal address, carry data inline
+        (``data:``), embed credentials, or point outside the agent's
+        ``preTool.egress.allowedDomains``, and for credential-shaped values in
+        the arguments. Which checks run, and whether a finding is a
+        ``"block"`` or only a flag, comes from the agent's guardrail config
+        (``agent_name``) or an explicit ``config``. With no config nothing is
+        checked and the result is ``"allow"``.
+
+        Returns the same shape as :meth:`check_guardrails` (``action``,
+        ``reasons``, ``tags``, ``metadata``). Findings carry the host and the
+        argument path, never the URL or the secret. Fails open when the SDK is
+        disabled.
+        """
+        return self._check_tool_stage("pre_tool", tool_name, "args", args, agent_name, config)
+
+    def check_tool_result(
+        self,
+        tool_name: str,
+        result: Any,
+        *,
+        agent_name: Optional[str] = None,
+        config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Check what a tool returned before the model sees it.
+
+        Looks for credential-shaped values and for instruction-like text in
+        retrieved content (indirect prompt injection), per the agent's
+        ``postTool`` guardrail config. ``"block"`` means the caller should
+        drop the result; the default is to flag it. Same return shape and
+        fail-open behaviour as :meth:`check_tool_call`.
+        """
+        return self._check_tool_stage("post_tool", tool_name, "result", result, agent_name, config)
 
     def update_current_trace(
         self,
@@ -342,6 +485,66 @@ class AgentOps:
             update_kwargs["tags"] = tags
 
         langfuse_context.update_current_trace(**update_kwargs)
+
+    def update_current_observation(
+        self,
+        *,
+        model: Optional[str] = None,
+        input: Optional[Any] = None,
+        output: Optional[Any] = None,
+        usage_details: Optional[dict[str, Any]] = None,
+        cost_details: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        level: Optional[str] = None,
+        status_message: Optional[str] = None,
+        completion_start_time: Optional[Any] = None,
+        model_parameters: Optional[dict[str, Any]] = None,
+        version: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Update the active observation created by ``@observe()``.
+
+        Must be called from inside a function decorated with ``@observe()``.
+        For generation observations (``@observe(as_type="generation")``),
+        ``model`` + ``usage_details`` are what unlocks server-side cost
+        calculation — without them the ingestion path sets
+        ``provided_model_name = null`` and ``findModel`` is skipped.
+
+        Note: the wrapper proxies to ``langfuse_context`` (the v2 decorator
+        singleton) rather than ``self._client`` because the underlying
+        ``Langfuse`` class itself has no such method in either v2 or v3 —
+        observation state is owned by the decorator context, not the client.
+        """
+        if not self._enabled:
+            return
+
+        from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
+
+        update_kwargs: dict[str, Any] = {**kwargs}
+        if model is not None:
+            update_kwargs["model"] = model
+        if input is not None:
+            update_kwargs["input"] = input
+        if output is not None:
+            update_kwargs["output"] = output
+        if usage_details is not None:
+            update_kwargs["usage_details"] = usage_details
+        if cost_details is not None:
+            update_kwargs["cost_details"] = cost_details
+        if metadata is not None:
+            update_kwargs["metadata"] = metadata
+        if level is not None:
+            update_kwargs["level"] = level
+        if status_message is not None:
+            update_kwargs["status_message"] = status_message
+        if completion_start_time is not None:
+            update_kwargs["completion_start_time"] = completion_start_time
+        if model_parameters is not None:
+            update_kwargs["model_parameters"] = model_parameters
+        if version is not None:
+            update_kwargs["version"] = version
+
+        langfuse_context.update_current_observation(**update_kwargs)
 
     def flush(self) -> None:
         """Flush all pending traces — both the API client and the ``@observe`` decorator buffer."""

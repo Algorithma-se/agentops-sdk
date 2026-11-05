@@ -1,0 +1,19 @@
+# Pinned versions captured from the spike environment (Python 3.12.14, 2026-09-16).
+# `pip install "agent-governance-toolkit[full]"` resolved to 4.1.0; 5.0.0 exists on
+# PyPI but was not selected by the resolver (see __fixtures__/agt/README.md).
+# AGT requires Python >= 3.11.
+agent-governance-toolkit[full]==4.1.0
+agent-governance-toolkit-core==4.1.0
+agent-governance-toolkit-cli==4.1.0
+agent-governance-toolkit-integrations==4.1.0
+agent-governance-toolkit-protocols==4.1.0
+# OpenTelemetry: `agent-governance-toolkit[full]` pulls in opentelemetry-api/sdk, but
+# NOT an exporter. The OTLP/HTTP exporter is needed to get spans off the box.
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-exporter-otlp-proto-common==1.44.0
+opentelemetry-proto==1.44.0
+opentelemetry-semantic-conventions==0.65b0
+protobuf==7.36.1
+googleapis-common-protos==1.75.3

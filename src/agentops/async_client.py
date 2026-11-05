@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import httpx
 
-from . import _cloud_run_auth
-from ._env import get_host, get_public_key, get_secret_key
+from . import _cloud_run_auth, _http
+from ._env import basic_auth_header, get_host, get_public_key, get_secret_key
+from .policies import (
+    DEFAULT_CACHE_TTL_S,
+    DEFAULT_LABEL,
+    AgentPolicy,
+    PolicyCache,
+    PolicyNotFound,
+    parse_policy_response,
+    policy_url,
+    resolve_after_fetch_error,
+)
 
 _log = logging.getLogger("agentops")
 from .tables import (
@@ -62,6 +72,7 @@ class AsyncAgentOps:
         self._enabled = True
         self._client: Any = None
         self._http: Optional[httpx.AsyncClient] = None
+        self._policy_cache = PolicyCache()
 
         missing: list[str] = []
         if not self._host:
@@ -217,7 +228,7 @@ class AsyncAgentOps:
         resp = await http.get(
             f"{self._host}/api/public/files",
             params=params,
-            headers={"Authorization": f"Bearer {self._secret_key}"},
+            headers=basic_auth_header(self._public_key, self._secret_key),
         )
         resp.raise_for_status()
         data = resp.json()
@@ -235,6 +246,55 @@ class AsyncAgentOps:
             data["local_path"] = local_path
 
         return data
+
+    async def get_policy(
+        self,
+        agent_name: str,
+        label: str = DEFAULT_LABEL,
+        *,
+        cache_ttl_seconds: int = DEFAULT_CACHE_TTL_S,
+        fallback: Union[str, AgentPolicy, None] = None,
+        fetch_timeout_seconds: float = 10.0,
+    ) -> Optional[AgentPolicy]:
+        """Fetch the agent's tool-call policy from the registry (async).
+
+        Same contract, caching and fallback semantics as
+        :meth:`AgentOps.get_policy`; ``404`` raises :class:`PolicyNotFound`.
+        Returns ``None`` when the SDK is disabled (unless ``fallback`` is given).
+        """
+        if not self._enabled:
+            return AgentPolicy.from_fallback(agent_name, fallback) if fallback is not None else None
+
+        cached, fresh = self._policy_cache.get(agent_name, label, cache_ttl_seconds)
+        if cached is not None and fresh:
+            return cached
+        try:
+            http = await self._get_http()
+            resp = await http.get(
+                policy_url(self._host, agent_name),
+                params={"label": label},
+                headers={"Authorization": _http.basic_auth_header(self._public_key, self._secret_key)},
+                timeout=fetch_timeout_seconds,
+            )
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+            policy = parse_policy_response(
+                resp.status_code, body, agent_name=agent_name, label=label, text=resp.text or ""
+            )
+        except Exception as e:
+            if isinstance(e, PolicyNotFound):
+                self._policy_cache.drop(agent_name, label)
+            return resolve_after_fetch_error(
+                e, agent_name=agent_name, label=label, stale=cached, fallback=fallback
+            )
+        self._policy_cache.put(agent_name, label, policy)
+        return policy
+
+    def clear_policy_cache(self) -> None:
+        """Forget cached policies so the next ``get_policy`` refetches."""
+        self._policy_cache.clear()
 
     async def check_guardrails(
         self,
@@ -264,11 +324,59 @@ class AsyncAgentOps:
         resp = await http.post(
             f"{self._host}/api/public/guardrails",
             json=body,
-            headers={"Authorization": f"Bearer {self._secret_key}"},
+            headers=basic_auth_header(self._public_key, self._secret_key),
             timeout=timeout,
         )
         resp.raise_for_status()
         return resp.json()
+
+    async def _check_tool_stage(
+        self,
+        stage: str,
+        tool_name: str,
+        key: str,
+        payload: Any,
+        agent_name: Optional[str],
+        config: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not self._enabled:
+            return {"action": "allow", "reasons": [], "tags": [], "metadata": {}}
+        http = await self._get_http()
+        body: dict[str, Any] = {"stage": stage, "toolName": tool_name, key: payload}
+        if config is not None:
+            body["config"] = config
+        elif agent_name is not None:
+            body["agentName"] = agent_name
+        resp = await http.post(
+            f"{self._host}/api/public/guardrails",
+            json=body,
+            headers=basic_auth_header(self._public_key, self._secret_key),
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def check_tool_call(
+        self,
+        tool_name: str,
+        args: Any,
+        *,
+        agent_name: Optional[str] = None,
+        config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Check a tool call's arguments server-side (async); see ``AgentOps.check_tool_call``."""
+        return await self._check_tool_stage("pre_tool", tool_name, "args", args, agent_name, config)
+
+    async def check_tool_result(
+        self,
+        tool_name: str,
+        result: Any,
+        *,
+        agent_name: Optional[str] = None,
+        config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Check a tool's result server-side (async); see ``AgentOps.check_tool_result``."""
+        return await self._check_tool_stage("post_tool", tool_name, "result", result, agent_name, config)
 
     def update_current_trace(
         self,
@@ -299,6 +407,60 @@ class AsyncAgentOps:
             update_kwargs["tags"] = tags
 
         langfuse_context.update_current_trace(**update_kwargs)
+
+    def update_current_observation(
+        self,
+        *,
+        model: Optional[str] = None,
+        input: Optional[Any] = None,
+        output: Optional[Any] = None,
+        usage_details: Optional[dict[str, Any]] = None,
+        cost_details: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        level: Optional[str] = None,
+        status_message: Optional[str] = None,
+        completion_start_time: Optional[Any] = None,
+        model_parameters: Optional[dict[str, Any]] = None,
+        version: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Update the active observation created by ``@observe()``.
+
+        See :meth:`AgentOps.update_current_observation` for the rationale —
+        this is a synchronous call even on the async client because the
+        underlying ``langfuse_context`` mutates an in-process span buffer
+        and never does I/O.
+        """
+        if not self._enabled:
+            return
+
+        from langfuse.decorators import langfuse_context  # type: ignore[import-untyped]
+
+        update_kwargs: dict[str, Any] = {**kwargs}
+        if model is not None:
+            update_kwargs["model"] = model
+        if input is not None:
+            update_kwargs["input"] = input
+        if output is not None:
+            update_kwargs["output"] = output
+        if usage_details is not None:
+            update_kwargs["usage_details"] = usage_details
+        if cost_details is not None:
+            update_kwargs["cost_details"] = cost_details
+        if metadata is not None:
+            update_kwargs["metadata"] = metadata
+        if level is not None:
+            update_kwargs["level"] = level
+        if status_message is not None:
+            update_kwargs["status_message"] = status_message
+        if completion_start_time is not None:
+            update_kwargs["completion_start_time"] = completion_start_time
+        if model_parameters is not None:
+            update_kwargs["model_parameters"] = model_parameters
+        if version is not None:
+            update_kwargs["version"] = version
+
+        langfuse_context.update_current_observation(**update_kwargs)
 
     async def flush(self) -> None:
         """Flush all pending traces."""

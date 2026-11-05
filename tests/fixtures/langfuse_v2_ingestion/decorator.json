@@ -1,0 +1,132 @@
+{
+  "recordedWith": {
+    "agentopsSdk": "0.4.0",
+    "langfuse": "2.60.10",
+    "python": "3.12.14"
+  },
+  "requests": [
+    {
+      "authScheme": "Basic",
+      "body": {
+        "batch": [
+          {
+            "body": {
+              "id": "de546217-7f33-4bf8-b0cb-27f7bfa89132",
+              "input": {
+                "args": [
+                  "Hi there"
+                ],
+                "kwargs": {}
+              },
+              "name": "handle-message",
+              "release": "contract-fixture",
+              "start_time": "2026-09-23T05:41:54.029452Z",
+              "timestamp": "2026-09-23T05:41:54.035347Z"
+            },
+            "id": "8bff16f5-8a95-4a7e-8211-3bbacb0ebb99",
+            "timestamp": "2026-09-23T05:41:54.035397Z",
+            "type": "trace-create"
+          },
+          {
+            "body": {
+              "id": "de546217-7f33-4bf8-b0cb-27f7bfa89132",
+              "metadata": {
+                "conversation": "c-1"
+              },
+              "release": "contract-fixture",
+              "tags": [
+                "contract",
+                "decorator"
+              ],
+              "timestamp": "2026-09-23T05:41:54.035428Z"
+            },
+            "id": "49f4624b-29f6-4ea3-8541-91a5d9b3c019",
+            "timestamp": "2026-09-23T05:41:54.035457Z",
+            "type": "trace-create"
+          },
+          {
+            "body": {
+              "id": "17d614fb-c7dc-4a72-8267-ce661a13ba2b",
+              "input": {
+                "args": [
+                  "Hi there"
+                ],
+                "kwargs": {}
+              },
+              "name": "llm-call",
+              "startTime": "2026-09-23T05:41:54.035490Z",
+              "traceId": "de546217-7f33-4bf8-b0cb-27f7bfa89132"
+            },
+            "id": "3fda24e6-55da-4957-89c7-ae48662a00bd",
+            "timestamp": "2026-09-23T05:41:54.035647Z",
+            "type": "generation-create"
+          },
+          {
+            "body": {
+              "endTime": "2026-09-23T05:41:54.035663Z",
+              "id": "17d614fb-c7dc-4a72-8267-ce661a13ba2b",
+              "input": [
+                {
+                  "content": "Hi there",
+                  "role": "user"
+                }
+              ],
+              "metadata": {
+                "deployment": "contract"
+              },
+              "model": "gpt-4o-mini",
+              "modelParameters": {
+                "temperature": 0
+              },
+              "output": "Hello from the agent",
+              "traceId": "de546217-7f33-4bf8-b0cb-27f7bfa89132",
+              "usageDetails": {
+                "input": 20,
+                "output": 5
+              }
+            },
+            "id": "e7184708-a1e6-4632-9e92-b5a9d1f2604f",
+            "timestamp": "2026-09-23T05:41:54.035842Z",
+            "type": "generation-update"
+          },
+          {
+            "body": {
+              "end_time": "2026-09-23T05:41:54.035853Z",
+              "id": "de546217-7f33-4bf8-b0cb-27f7bfa89132",
+              "metadata": {
+                "conversation": "c-1"
+              },
+              "name": "securitas-agent",
+              "output": {
+                "answer": "Hello from the agent"
+              },
+              "sessionId": "session-contract-2",
+              "tags": [
+                "contract",
+                "decorator"
+              ],
+              "userId": "user-contract-2"
+            },
+            "id": "97325afe-b09d-413e-8109-0c3e1d4c371f",
+            "timestamp": "2026-09-23T05:41:54.035882Z",
+            "type": "trace-create"
+          }
+        ],
+        "metadata": {
+          "batch_size": 5,
+          "public_key": "pk-lf-recorder",
+          "sdk_integration": "default",
+          "sdk_name": "python",
+          "sdk_version": "2.60.10"
+        }
+      },
+      "headers": {
+        "content-type": "application/json"
+      },
+      "method": "POST",
+      "path": "/api/public/ingestion"
+    }
+  ],
+  "scenario": "decorator",
+  "unhandledRequests": []
+}

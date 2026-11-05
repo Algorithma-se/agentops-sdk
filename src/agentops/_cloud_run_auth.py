@@ -16,8 +16,7 @@ The token goes in ``X-Serverless-Authorization`` so it doesn't collide
 with the SDK's own ``Authorization: Basic <pk:sk>`` header. Both
 layers travel on the same request; Cloud Run strips the bearer after
 validating it against IAM; the AgentOps container only sees the Basic
-auth (or ``Authorization: Bearer <secret>`` on the public REST
-endpoints).
+auth.
 
 Design notes:
 

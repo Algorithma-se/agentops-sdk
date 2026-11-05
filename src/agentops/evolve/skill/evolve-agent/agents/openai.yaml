@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evolve Agent"
+  short_description: "Improve this repo's agents from AOS Control feedback with sandboxed replays and candidate prompts"
+  default_prompt: "Use $evolve-agent to work through the unresolved AOS Control feedback for the agents in this repository's agents.yaml, and stop before publishing."

@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentops-sdk"
-version = "0.4.0"
+version = "0.5.0"
 description = "AgentOps Python SDK — tracing, prompts, guardrails, and content management"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 authors = [{ name = "AgentOps" }]
 dependencies = [
-  "langfuse>=2.0.0,<3.0",
+  "langfuse>=2.54.0,<3.0",
   "requests>=2.28.0",
   "httpx>=0.25.0",
   "jinja2>=3.1.0",
@@ -22,9 +22,38 @@ dependencies = [
   "google-auth>=2.29.0",
 ]
 
+[project.scripts]
+agentops = "agentops.cli:main"
+
 [project.optional-dependencies]
 async = [
   "aiofiles>=23.0",
+]
+# NIST FF3-1 format-preserving encryption for Guardrails.obfuscate()/
+# deobfuscate() — kept optional (not a hard dependency) because `ff3`
+# itself requires Python >=3.10, one major above this package's own
+# `requires-python = ">=3.9"` floor. A 3.9 user who runs
+# `pip install agentops-sdk[pii]` gets pip's normal resolution error,
+# which is the correct failure mode — bumping the whole SDK's minimum
+# Python version for one optional feature isn't.
+pii = [
+  "ff3>=1.0.3",
+]
+# Tool-call policy enforcement via Microsoft's Agent Governance Toolkit, with
+# decisions exported to AOS Control as OTel spans (see agentops/governance.py).
+# Pinned exactly: AGT's public surface moved between 4.x and 5.0 and the
+# wrapper relies on 4.1.0's PolicyEngine/trace_policy_evaluation behaviour
+# recorded in packages/shared/src/server/otel/__fixtures__/agt/README.md.
+# AGT core requires Python >=3.11 (same story as the `pii` extra above: pip
+# gives 3.9/3.10 users a resolution error, which is the right failure mode).
+# AGT's enable_otel() attaches no exporter, so the OTLP/HTTP exporter is ours.
+governance = [
+  "agent-governance-toolkit-core==4.1.0",
+  "opentelemetry-sdk>=1.44,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
+]
+dev = [
+  "pytest>=7",
 ]
 
 [tool.setuptools]
@@ -35,5 +64,14 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 agentops = ["py.typed"]
+"agentops.evolve" = [
+  "child/sitecustomize.py",
+  "skill/evolve-agent/SKILL.md",
+  "skill/evolve-agent/env.evolve.template",
+  "skill/evolve-agent/agents/*.yaml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 

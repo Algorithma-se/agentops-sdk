@@ -1,0 +1,251 @@
+{
+  "recordedWith": {
+    "agentopsSdk": "0.4.0",
+    "langfuse": "2.60.10",
+    "python": "3.12.14"
+  },
+  "requests": [
+    {
+      "authScheme": "Basic",
+      "body": {
+        "batch": [
+          {
+            "body": {
+              "environment": "contract",
+              "id": "7269dac9-4060-4043-89c9-6a0827cbb7f1",
+              "input": {
+                "message": "Where is my order?"
+              },
+              "metadata": {
+                "agent": "support-agent",
+                "channel": "chat"
+              },
+              "name": "support-turn",
+              "release": "contract-fixture",
+              "sessionId": "session-contract-1",
+              "tags": [
+                "contract",
+                "v2"
+              ],
+              "timestamp": "2026-09-23T05:41:49.808043Z",
+              "userId": "user-contract-1"
+            },
+            "id": "dbc7ac19-917b-4391-9db4-302b81ff5183",
+            "timestamp": "2026-09-23T05:41:49.808262Z",
+            "type": "trace-create"
+          },
+          {
+            "body": {
+              "environment": "contract",
+              "id": "6952e90e-b046-4892-8f21-a554b7c81e2c",
+              "input": {
+                "orderRef": "A-1001"
+              },
+              "metadata": {
+                "source": "orders-db"
+              },
+              "name": "retrieve-order",
+              "startTime": "2026-09-23T05:41:49.808284Z",
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1"
+            },
+            "id": "85bd19c0-02ca-4a88-ba80-1befc4be89f0",
+            "timestamp": "2026-09-23T05:41:49.808313Z",
+            "type": "span-create"
+          },
+          {
+            "body": {
+              "id": "6952e90e-b046-4892-8f21-a554b7c81e2c",
+              "metadata": {
+                "rows": 1
+              },
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1"
+            },
+            "id": "9e85ce21-1b7e-4239-8e0e-157f509b1b75",
+            "timestamp": "2026-09-23T05:41:49.808336Z",
+            "type": "span-update"
+          },
+          {
+            "body": {
+              "endTime": "2026-09-23T05:41:49.808340Z",
+              "id": "6952e90e-b046-4892-8f21-a554b7c81e2c",
+              "output": {
+                "status": "shipped"
+              },
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1"
+            },
+            "id": "b704c841-57bd-456a-b28e-0e0dae022650",
+            "timestamp": "2026-09-23T05:41:49.808355Z",
+            "type": "span-update"
+          },
+          {
+            "body": {
+              "environment": "contract",
+              "id": "d35a08b0-31a2-43aa-bcfa-2b5c284292ea",
+              "input": [
+                {
+                  "content": "You are a support agent.",
+                  "role": "system"
+                },
+                {
+                  "content": "Where is my order?",
+                  "role": "user"
+                }
+              ],
+              "metadata": {
+                "step": 1
+              },
+              "model": "gpt-4o-mini",
+              "modelParameters": {
+                "max_tokens": 256,
+                "temperature": "0.2"
+              },
+              "name": "answer",
+              "parentObservationId": "6952e90e-b046-4892-8f21-a554b7c81e2c",
+              "startTime": "2026-09-23T05:41:49.808363Z",
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1"
+            },
+            "id": "ced631b3-a7a7-4470-aafe-32d3150c3658",
+            "timestamp": "2026-09-23T05:41:49.808577Z",
+            "type": "generation-create"
+          },
+          {
+            "body": {
+              "completionStartTime": "2026-09-23T05:41:49.808583Z",
+              "id": "d35a08b0-31a2-43aa-bcfa-2b5c284292ea",
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1"
+            },
+            "id": "134778ff-321b-408f-a9e2-ea77fb821e51",
+            "timestamp": "2026-09-23T05:41:49.808647Z",
+            "type": "generation-update"
+          },
+          {
+            "body": {
+              "endTime": "2026-09-23T05:41:49.808650Z",
+              "id": "d35a08b0-31a2-43aa-bcfa-2b5c284292ea",
+              "output": {
+                "content": "It shipped yesterday.",
+                "role": "assistant"
+              },
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1",
+              "usageDetails": {
+                "input": 42,
+                "output": 7,
+                "total": 49
+              }
+            },
+            "id": "b33ac207-fbac-4c54-b691-39ac5f118478",
+            "timestamp": "2026-09-23T05:41:49.808759Z",
+            "type": "generation-update"
+          },
+          {
+            "body": {
+              "environment": "contract",
+              "id": "119811dd-4462-4c01-9ab2-dcc67b40926a",
+              "input": "Where is my order?",
+              "model": "gpt-4o-mini",
+              "name": "classify",
+              "startTime": "2026-09-23T05:41:49.808766Z",
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1"
+            },
+            "id": "1d76e297-f108-49e2-87fd-a0a043d93aaa",
+            "timestamp": "2026-09-23T05:41:49.808843Z",
+            "type": "generation-create"
+          },
+          {
+            "body": {
+              "costDetails": {
+                "input": 1.65e-05,
+                "output": 1.2e-06
+              },
+              "endTime": "2026-09-23T05:41:49.808846Z",
+              "id": "119811dd-4462-4c01-9ab2-dcc67b40926a",
+              "output": "order_status",
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1",
+              "usage": {
+                "input": 11,
+                "output": 2,
+                "total": 13,
+                "unit": "TOKENS"
+              }
+            },
+            "id": "c189b073-025e-4277-8965-85ed77f87a09",
+            "timestamp": "2026-09-23T05:41:49.809097Z",
+            "type": "generation-update"
+          },
+          {
+            "body": {
+              "environment": "contract",
+              "id": "eef4c7f7-af1a-4900-a3eb-2e38c0c4221e",
+              "input": {
+                "stage": "pre_input"
+              },
+              "level": "WARNING",
+              "name": "guardrail-check",
+              "output": {
+                "action": "allow"
+              },
+              "startTime": "2026-09-23T05:41:49.809106Z",
+              "statusMessage": "jailbreak signal below threshold",
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1"
+            },
+            "id": "4161d3e0-312b-43ca-af44-a967c1e10f4e",
+            "timestamp": "2026-09-23T05:41:49.809125Z",
+            "type": "event-create"
+          },
+          {
+            "body": {
+              "comment": "resolved",
+              "environment": "contract",
+              "id": "4dad0df0-2f87-4446-80fd-26c319d99f05",
+              "name": "helpfulness",
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1",
+              "value": 0.9
+            },
+            "id": "c070a453-dc5d-474d-8ba6-0e0f1f3dd22b",
+            "timestamp": "2026-09-23T05:41:49.809146Z",
+            "type": "score-create"
+          },
+          {
+            "body": {
+              "dataType": "CATEGORICAL",
+              "environment": "contract",
+              "id": "e517fcb5-330d-475e-ba16-c8483f2c775d",
+              "name": "tone",
+              "observationId": "d35a08b0-31a2-43aa-bcfa-2b5c284292ea",
+              "traceId": "7269dac9-4060-4043-89c9-6a0827cbb7f1",
+              "value": "friendly"
+            },
+            "id": "18fcceeb-e346-4ab7-9346-09c53c5a8526",
+            "timestamp": "2026-09-23T05:41:49.809164Z",
+            "type": "score-create"
+          },
+          {
+            "body": {
+              "id": "7269dac9-4060-4043-89c9-6a0827cbb7f1",
+              "output": {
+                "answer": "It shipped yesterday."
+              }
+            },
+            "id": "e8ddaaae-58e9-447b-83c3-87cc2c90367e",
+            "timestamp": "2026-09-23T05:41:49.809177Z",
+            "type": "trace-create"
+          }
+        ],
+        "metadata": {
+          "batch_size": 13,
+          "public_key": "pk-lf-recorder",
+          "sdk_integration": "default",
+          "sdk_name": "python",
+          "sdk_version": "2.60.10"
+        }
+      },
+      "headers": {
+        "content-type": "application/json"
+      },
+      "method": "POST",
+      "path": "/api/public/ingestion"
+    }
+  ],
+  "scenario": "lowlevel",
+  "unhandledRequests": []
+}
